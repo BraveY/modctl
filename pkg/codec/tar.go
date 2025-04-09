@@ -23,20 +23,27 @@ import (
 )
 
 // tar is a codec for tar files.
-type tar struct{}
+type TarCodec struct {
+	FileReader io.Reader
+}
 
 // newTar creates a new tar codec instance.
-func newTar() *tar {
-	return &tar{}
+func newTar() *TarCodec {
+	return &TarCodec{}
 }
 
 // Encode tars the target file into a reader.
-func (t *tar) Encode(targetFilePath, workDirPath string) (io.Reader, error) {
-	return archiver.Tar(targetFilePath, workDirPath)
+func (t *TarCodec) Encode(targetFilePath, workDirPath string) (io.Reader, error) {
+	tarReader, fileReader, err := archiver.Tar(targetFilePath, workDirPath)
+	if err != nil {
+		return nil, err
+	}
+	t.FileReader = fileReader
+	return tarReader, nil
 }
 
 // Decode reads the input reader and decodes the data into the output path.
-func (t *tar) Decode(reader io.Reader, outputDir, filePath string) error {
+func (t *TarCodec) Decode(reader io.Reader, outputDir, filePath string) error {
 	// As the file name has been provided in the tar header,
 	// so we do not care about the filePath.
 	return archiver.Untar(reader, outputDir)

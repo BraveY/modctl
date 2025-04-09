@@ -21,9 +21,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	modelspec "github.com/CloudNativeAI/model-spec/specs-go/v1"
@@ -31,11 +33,13 @@ import (
 	godigest "github.com/opencontainers/go-digest"
 	spec "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/sirupsen/logrus"
 
 	buildconfig "github.com/CloudNativeAI/modctl/pkg/backend/build/config"
 	"github.com/CloudNativeAI/modctl/pkg/backend/build/hooks"
-	"github.com/CloudNativeAI/modctl/pkg/codec"
+	cc "github.com/CloudNativeAI/modctl/pkg/codec"
 	"github.com/CloudNativeAI/modctl/pkg/storage"
+	"github.com/CloudNativeAI/modctl/utils/nydusify"
 )
 
 // OutputType defines the type of output to generate.
@@ -113,6 +117,7 @@ type abstractBuilder struct {
 }
 
 func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, path string, hooks hooks.Hooks) (ocispec.Descriptor, error) {
+	fmt.Printf("building layer: %s\n", path)
 	info, err := os.Stat(path)
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to get file info: %w", err)
@@ -134,7 +139,7 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 		return ocispec.Descriptor{}, fmt.Errorf("failed to get relative path: %w", err)
 	}
 
-	codec, err := codec.New(codec.TypeFromMediaType(mediaType))
+	codec, err := cc.New(cc.TypeFromMediaType(mediaType))
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to create codec: %w", err)
 	}
@@ -145,6 +150,24 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 		return ocispec.Descriptor{}, fmt.Errorf("failed to encode file: %w", err)
 	}
 
+	var wg sync.WaitGroup
+	var crcDesc *ocispec.Descriptor
+	if tarCode, ok := codec.(*cc.TarCodec); ok {
+		fmt.Println("calculate crc32 per chunk")
+		crcDesc = &ocispec.Descriptor{
+			MediaType:   mediaType,
+			Annotations: map[string]string{},
+		}
+		wg.Add(1)
+		crcHandler := nydusify.NewCRCHandler()
+		go func() {
+			defer wg.Done()
+			if err := crcHandler.Handle(context.Background(), tarCode.FileReader, crcDesc); err != nil {
+				logrus.Error("failed to calculate crc32 per chunk")
+				fmt.Println("failed to calculate crc32 per chunk")
+			}
+		}()
+	}
 	// Calculate the digest of the encoded content.
 	hash := sha256.New()
 	size, err := io.Copy(hash, reader)
@@ -153,10 +176,13 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 	}
 
 	digest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
+	wg.Wait()
+	fmt.Printf("digest: %s\n", digest)
 
 	// Seek the reader to the beginning if supported,
 	// otherwise we needs to re-encode the content again.
 	if seeker, ok := reader.(io.ReadSeeker); ok {
+		fmt.Printf("seek reader to the beginning")
 		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("failed to seek reader: %w", err)
 		}
@@ -165,9 +191,21 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 		if err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("failed to encode file: %w", err)
 		}
+		if tarCode, ok := codec.(*cc.TarCodec); ok {
+			go func() {
+				io.Copy(io.Discard, tarCode.FileReader)
+			}()
+		}
 	}
 
-	return ab.strategy.OutputLayer(ctx, mediaType, relPath, digest, size, reader, hooks)
+	desc, err := ab.strategy.OutputLayer(ctx, mediaType, relPath, digest, size, reader, hooks)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to output layer: %w", err)
+	}
+	if desc.Annotations != nil && crcDesc != nil && crcDesc.Annotations != nil {
+		desc.Annotations[nydusify.CrcsKey] = crcDesc.Annotations[nydusify.CrcsKey]
+	}
+	return desc, nil
 }
 
 func (ab *abstractBuilder) BuildConfig(ctx context.Context, layers []ocispec.Descriptor, modelConfig *buildconfig.Model, hooks hooks.Hooks) (ocispec.Descriptor, error) {
@@ -246,4 +284,36 @@ func buildModelConfig(modelConfig *buildconfig.Model, layers []ocispec.Descripto
 		Descriptor: descriptor,
 		ModelFS:    fs,
 	}, nil
+}
+
+func calculateCRC32PerChunk2(reader io.Reader, chunkSize int64) ([]uint32, error) {
+	// 初始化 CRC32 表
+	table := crc32.MakeTable(crc32.Castagnoli)
+
+	// 存储每个块的 CRC32 校验和
+	var crc32Results []uint32
+
+	for {
+		// 创建一个限制为 chunkSize 的 Reader
+		limitedReader := io.LimitReader(reader, chunkSize)
+
+		// 计算当前块的 CRC32 校验和
+		hash := crc32.New(table)
+		n, err := io.Copy(hash, limitedReader)
+		// 检查是否到达 EOF 或发生错误
+		if n == 0 || err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to read data: %w", err)
+		}
+
+		// 如果读取到数据，保存 CRC32 校验和
+		if n > 0 {
+			crc32Results = append(crc32Results, hash.Sum32())
+		}
+
+	}
+	return crc32Results, nil
 }

@@ -23,22 +23,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Tar creates a tar archive of the specified path (file or directory)
 // and returns the content as a stream. For individual files, it preserves
 // the directory structure relative to the working directory.
-func Tar(srcPath string, workDir string) (io.Reader, error) {
+func Tar(srcPath string, workDir string) (io.Reader, io.Reader, error) {
+	logrus.Infof("Archiving %s", srcPath)
 	pr, pw := io.Pipe()
+	prOrig, pwOrig := io.Pipe()
 
 	go func() {
 		defer pw.Close()
+		defer pwOrig.Close()
 		tw := tar.NewWriter(pw)
 		defer tw.Close()
 
 		info, err := os.Stat(srcPath)
 		if err != nil {
 			pw.CloseWithError(fmt.Errorf("failed to stat source path: %w", err))
+			pwOrig.CloseWithError(fmt.Errorf("failed to stat source path: %w", err))
 			return
 		}
 
@@ -74,7 +80,9 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 					}
 					defer file.Close()
 
-					if _, err := io.Copy(tw, file); err != nil {
+					// Use TeeReader to copy file content to both original and tar writer
+					tee := io.TeeReader(file, pwOrig)
+					if _, err := io.Copy(tw, tee); err != nil {
 						return fmt.Errorf("failed to write file %s to tar: %w", path, err)
 					}
 				}
@@ -84,6 +92,7 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 
 			if err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to walk directory: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to walk directory: %w", err))
 				return
 			}
 		} else {
@@ -91,6 +100,7 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 			file, err := os.Open(srcPath)
 			if err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to open file: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to open file: %w", err))
 				return
 			}
 			defer file.Close()
@@ -98,6 +108,7 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 			header, err := tar.FileInfoHeader(info, "")
 			if err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to create tar header: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to create tar header: %w", err))
 				return
 			}
 
@@ -106,6 +117,7 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 			relPath, err := filepath.Rel(workDir, srcPath)
 			if err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to get relative path: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to get relative path: %w", err))
 				return
 			}
 
@@ -113,17 +125,21 @@ func Tar(srcPath string, workDir string) (io.Reader, error) {
 			header.Name = relPath
 			if err := tw.WriteHeader(header); err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to write header: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to write header: %w", err))
 				return
 			}
 
-			if _, err := io.Copy(tw, file); err != nil {
+			// Use TeeReader to copy file content to both original and tar writer
+			tee := io.TeeReader(file, pwOrig)
+			if _, err := io.Copy(tw, tee); err != nil {
 				pw.CloseWithError(fmt.Errorf("failed to copy file to tar: %w", err))
+				pwOrig.CloseWithError(fmt.Errorf("failed to copy file to tar: %w", err))
 				return
 			}
 		}
 	}()
 
-	return pr, nil
+	return pr, prOrig, nil
 }
 
 // Untar extracts the contents of a tar archive from the provided reader

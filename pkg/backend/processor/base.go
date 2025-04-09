@@ -87,6 +87,7 @@ func (b *base) Process(ctx context.Context, builder build.Builder, workDir strin
 		eg.SetLimit(1)
 	}
 
+	fmt.Println("matching files")
 	// Initialize progress tracker if not provided.
 	tracker := processOpts.progressTracker
 	if tracker == nil {
@@ -101,6 +102,7 @@ func (b *base) Process(ctx context.Context, builder build.Builder, workDir strin
 		}
 
 		eg.Go(func() error {
+			fmt.Printf("processing %s\n", path)
 			desc, err := builder.BuildLayer(ctx, b.mediaType, workDir, path, hooks.NewHooks(
 				hooks.WithOnStart(func(name string, size int64, reader io.Reader) io.Reader {
 					return tracker.Add(internalpb.NormalizePrompt("Building layer"), name, size, reader)

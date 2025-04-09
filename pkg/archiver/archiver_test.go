@@ -36,10 +36,11 @@ func TestTar(t *testing.T) {
 		t.Fatalf("write file error: %v", err)
 	}
 
-	tarReader, err := Tar(filePath, tmpDir)
+	tarReader, fileReader, err := Tar(filePath, tmpDir)
 	if err != nil {
 		t.Fatalf("Tar error: %v", err)
 	}
+	io.Copy(io.Discard, fileReader)
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, tarReader); err != nil {
@@ -63,10 +64,11 @@ func TestUntar(t *testing.T) {
 		t.Fatalf("write file error: %v", err)
 	}
 
-	tarReader, err := Tar(filePath, tmpDir)
+	tarReader, fileReader, err := Tar(filePath, tmpDir)
 	if err != nil {
 		t.Fatalf("Tar error: %v", err)
 	}
+	io.Copy(io.Discard, fileReader)
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, tarReader); err != nil {
