@@ -18,6 +18,7 @@ package backend
 
 import (
 	"context"
+	"os"
 	"os/exec"
 )
 
@@ -29,9 +30,11 @@ const (
 // Nydusify is a function that converts a given model artifact to a nydus image.
 func (b *backend) Nydusify(ctx context.Context, source string) (string, error) {
 	target := source + nydusImageTagSuffix
+	nydusify := os.Getenv("NYDUS_NYDUSIFY")
+	nydus_image := os.Getenv("NYDUS_BUILDER")
 	cmd := exec.CommandContext(
 		ctx,
-		"nydusify",
+		nydusify,
 		"convert",
 		"--source-backend-type",
 		"model-artifact",
@@ -43,8 +46,11 @@ func (b *backend) Nydusify(ctx context.Context, source string) (string, error) {
 		source,
 		"--target",
 		target,
+		"--nydus-image",
+		nydus_image,
 	)
-
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return "", err
 	}

@@ -179,12 +179,14 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 	)
 	// Intercept the reader if needed.
 	if ab.interceptor != nil {
+		fmt.Println("enable interceptor")
 		var itReader io.Reader
 		reader, itReader = splitReader(reader)
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// io.Copy(io.Discard, itReader)
 			applyDesc, itErr = ab.interceptor.Intercept(ctx, mediaType, relPath, codec.Type(), itReader)
 		}()
 	}
@@ -193,6 +195,10 @@ func (ab *abstractBuilder) BuildLayer(ctx context.Context, mediaType, workDir, p
 	if err != nil {
 		return desc, err
 	}
+	fmt.Printf("desc: %v", desc)
+	// fmt.Println("copying reader to discard")
+	// io.Copy(io.Discard, reader)
+	// desc := ocispec.Descriptor{}
 
 	// Wait for the interceptor to finish.
 	wg.Wait()
@@ -295,11 +301,13 @@ func splitReader(original io.Reader) (io.Reader, io.Reader) {
 		defer w1.Close()
 		defer w2.Close()
 
-		_, err := io.Copy(multiWriter, original)
+		fmt.Println("copying")
+		n, err := io.Copy(multiWriter, original)
 		if err != nil {
 			w1.CloseWithError(err)
 			w2.CloseWithError(err)
 		}
+		fmt.Println("copied", n, "bytes")
 	}()
 
 	return r1, r2
